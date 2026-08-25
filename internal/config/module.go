@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -13,28 +15,63 @@ import (
 	"github.com/android-sms-gateway/server/internal/sms-gateway/modules/sse"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/otp"
 	"github.com/android-sms-gateway/server/internal/sms-gateway/pubsub"
-	"github.com/capcom6/go-infra-fx/config"
+	infraconfig "github.com/capcom6/go-infra-fx/config"
 	"github.com/capcom6/go-infra-fx/db"
 	"github.com/capcom6/go-infra-fx/http"
 	"github.com/go-core-fx/cachefx"
 	"go.uber.org/fx"
-	"go.uber.org/zap"
 )
+
+var errInvalidConfig = errors.New("invalid config")
+
+func loadConfig() (Config, error) {
+	cfg := Default()
+	err := infraconfig.LoadConfig(&cfg)
+
+	return finishConfigLoad(cfg, err)
+}
+
+func finishConfigLoad(cfg Config, loadErr error) (Config, error) {
+	if loadErr != nil {
+		return Config{}, fmt.Errorf("failed to load config: %w", loadErr)
+	}
+
+	if err := validateConfig(cfg); err != nil {
+		return Config{}, err
+	}
+
+	return cfg, nil
+}
+
+func validateConfig(cfg Config) error {
+	switch cfg.Gateway.Mode {
+	case GatewayModePublic:
+		return nil
+	case GatewayModePrivate:
+		if strings.TrimSpace(cfg.Gateway.PrivateToken) == "" {
+			return fmt.Errorf("%w: gateway private token must not be blank in private mode", errInvalidConfig)
+		}
+
+		return nil
+	case "":
+		return fmt.Errorf("%w: gateway mode must be explicitly configured", errInvalidConfig)
+	default:
+		return fmt.Errorf(
+			"%w: unsupported gateway mode %q: must be %q or %q",
+			errInvalidConfig,
+			cfg.Gateway.Mode,
+			GatewayModePublic,
+			GatewayModePrivate,
+		)
+	}
+}
 
 //nolint:funlen // long function
 func Module() fx.Option {
 	return fx.Module(
 		"appconfig",
 		fx.Provide(
-			func(log *zap.Logger) Config {
-				defaultConfig := Default()
-
-				if err := config.LoadConfig(&defaultConfig); err != nil {
-					log.Error("Error loading config", zap.Error(err))
-				}
-
-				return defaultConfig
-			},
+			loadConfig,
 			fx.Private,
 		),
 		fx.Provide(func(cfg Config) http.Config {

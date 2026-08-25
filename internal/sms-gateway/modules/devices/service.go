@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/rand/v2"
+	"sync"
 	"time"
 
 	"github.com/android-sms-gateway/server/internal/sms-gateway/modules/db"
@@ -13,12 +14,25 @@ import (
 type Service struct {
 	config Config
 
-	devices *Repository
+	devices serviceRepository
 	cache   *cache
+
+	cacheGeneration uint64
+	cacheMux        sync.RWMutex
 
 	idGen db.IDGen
 
 	logger *zap.Logger
+}
+
+type serviceRepository interface {
+	Insert(context.Context, DeviceInput) (*Device, error)
+	Select(context.Context, ...SelectFilter) ([]Device, error)
+	Exists(context.Context, ...SelectFilter) (bool, error)
+	Get(context.Context, ...SelectFilter) (*Device, error)
+	Update(context.Context, string, DeviceUpdate) error
+	SetLastSeenBatch(context.Context, map[string]time.Time) error
+	Remove(context.Context, ...SelectFilter) error
 }
 
 func NewService(
@@ -32,6 +46,9 @@ func NewService(
 
 		devices: devices,
 		cache:   newCache(),
+
+		cacheGeneration: 0,
+		cacheMux:        sync.RWMutex{},
 
 		idGen: idGen,
 
@@ -112,7 +129,10 @@ func (s *Service) GetAny(ctx context.Context, userID string, deviceID string, du
 // This method is used to retrieve a device by its auth token. If the device
 // does not exist, it returns ErrNotFound.
 func (s *Service) GetByToken(ctx context.Context, token string) (*Device, error) {
+	s.cacheMux.RLock()
 	device, err := s.cache.GetByToken(token)
+	cacheGeneration := s.cacheGeneration
+	s.cacheMux.RUnlock()
 	if err == nil {
 		return &device, nil
 	}
@@ -120,6 +140,16 @@ func (s *Service) GetByToken(ctx context.Context, token string) (*Device, error)
 	devicePtr, err := s.devices.Get(ctx, WithToken(token))
 	if err != nil {
 		return nil, err
+	}
+
+	s.cacheMux.Lock()
+	defer s.cacheMux.Unlock()
+
+	if cacheGeneration != s.cacheGeneration {
+		devicePtr, err = s.devices.Get(ctx, WithToken(token))
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if setErr := s.cache.Set(*devicePtr); setErr != nil {
@@ -165,6 +195,14 @@ func (s *Service) Remove(ctx context.Context, userID string, filter ...SelectFil
 		return nil
 	}
 
+	s.cacheMux.Lock()
+	defer s.cacheMux.Unlock()
+
+	if rmErr := s.devices.Remove(ctx, filter...); rmErr != nil {
+		return rmErr
+	}
+	s.cacheGeneration++
+
 	for _, device := range devices {
 		if cacheErr := s.cache.DeleteByID(device.ID); cacheErr != nil {
 			s.logger.Error("failed to invalidate cache",
@@ -172,10 +210,6 @@ func (s *Service) Remove(ctx context.Context, userID string, filter ...SelectFil
 				zap.Error(cacheErr),
 			)
 		}
-	}
-
-	if rmErr := s.devices.Remove(ctx, filter...); rmErr != nil {
-		return rmErr
 	}
 
 	return nil

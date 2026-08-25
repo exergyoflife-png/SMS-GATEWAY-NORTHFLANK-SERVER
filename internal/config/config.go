@@ -117,7 +117,6 @@ func Default() Config {
 	//nolint:exhaustruct,mnd,goconst // default values
 	return Config{
 		Gateway: Gateway{
-			Mode:        GatewayModePublic,
 			UpstreamURL: DefaultUpstreamURL,
 		},
 		HTTP: HTTP{

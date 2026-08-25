@@ -26,10 +26,15 @@ type mobileControllerParams struct {
 	Logger    *zap.Logger
 }
 
+type mobileMessagesService interface {
+	SelectPending(deviceID string, order messages.Order) ([]messages.Message, error)
+	UpdateState(device *devices.Device, message messages.MessageStateInput) error
+}
+
 type MobileController struct {
 	base.Handler
 
-	messagesSvc *messages.Service
+	messagesSvc mobileMessagesService
 }
 
 func NewMobileController(params mobileControllerParams) *MobileController {
@@ -105,12 +110,19 @@ func (h *MobileController) patch(device devices.Device, c *fiber.Ctx) error {
 		}
 
 		err := h.messagesSvc.UpdateState(&device, messageState)
-		if err != nil && !errors.Is(err, messages.ErrMessageNotFound) {
-			h.Logger.Error("failed to update message status",
-				zap.String("message_id", v.ID),
-				zap.Error(err),
-			)
+		if err == nil || errors.Is(err, messages.ErrMessageNotFound) {
+			continue
 		}
+
+		h.Logger.Error("failed to update message status",
+			zap.String("message_id", v.ID),
+			zap.Error(err),
+		)
+
+		return fiber.NewError(
+			fiber.StatusInternalServerError,
+			"failed to update message status",
+		)
 	}
 
 	return c.SendStatus(fiber.StatusNoContent)

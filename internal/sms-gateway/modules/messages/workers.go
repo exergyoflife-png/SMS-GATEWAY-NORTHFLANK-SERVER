@@ -2,11 +2,10 @@ package messages
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"sync"
 	"time"
-
-	"maps"
 
 	"go.uber.org/zap"
 )
@@ -14,8 +13,8 @@ import (
 type hashingWorker struct {
 	interval time.Duration
 
-	messages *Repository
-	logger   *zap.Logger
+	hashProcessed func(context.Context, []uint64) (int64, error)
+	logger        *zap.Logger
 
 	queue map[uint64]struct{}
 	mux   sync.Mutex
@@ -25,8 +24,8 @@ func newHashingWorker(config Config, messages *Repository, logger *zap.Logger) *
 	return &hashingWorker{
 		interval: config.HashingInterval,
 
-		messages: messages,
-		logger:   logger,
+		hashProcessed: messages.HashProcessed,
+		logger:        logger,
 
 		queue: map[uint64]struct{}{},
 		mux:   sync.Mutex{},
@@ -69,7 +68,13 @@ func (t *hashingWorker) process(ctx context.Context) {
 	}
 
 	t.logger.Debug("Hashing messages...")
-	if _, err := t.messages.HashProcessed(ctx, ids); err != nil {
+	if _, err := t.hashProcessed(ctx, ids); err != nil {
 		t.logger.Error("failed to hash messages", zap.Error(err))
+
+		t.mux.Lock()
+		for _, id := range ids {
+			t.queue[id] = struct{}{}
+		}
+		t.mux.Unlock()
 	}
 }
